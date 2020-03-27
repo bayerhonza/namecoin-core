@@ -629,7 +629,7 @@ name_export(const JSONRPCRequest& request)
     int count = 0;
     CNameData data;
     std::ofstream outfile;
-    outfile.open("/home/jan/perso/RIE/security/bdns/domains/result.json");
+    outfile.open("result.json");
     outfile << "[";
     const auto& coinsTip = ::ChainstateActive().CoinsTip();
     std::unique_ptr<CNameIterator> iter(coinsTip.IterateNames());
