@@ -640,12 +640,9 @@ name_export(const JSONRPCRequest& request)
             if (!boost::xpressive::regex_search(nameStr, matches, regexp))
                 continue;
             UniValue nameInfo = getNameInfo(options, name, data, wallet);
-            if ( count == 0 )
-            {
-               outfile << nameInfo.write(4) << std::endl;
-            }
-            else
-            {
+            if ( count == 0 ){
+                outfile << nameInfo.write(4) << std::endl;
+            } else {
                outfile << ',' << nameInfo.write(4) << std::endl;
             }
             count++;
