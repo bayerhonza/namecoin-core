@@ -66,9 +66,7 @@ getNameInfo(const UniValue& options,
     const CScript& addr)
 {
     UniValue obj(UniValue::VOBJ);
-    AddEncodedNameToUniv(obj, "name", name,
-        EncodingFromOptionsJson(options, "nameEncoding",
-            ConfiguredNameEncoding()));
+    AddEncodedNameToUniv(obj, "name", name, EncodingFromOptionsJson(options, "nameEncoding", ConfiguredNameEncoding()));
     AddEncodedNameToUniv(obj, "value", value,
         EncodingFromOptionsJson(options, "valueEncoding",
             ConfiguredValueEncoding()));
@@ -596,31 +594,51 @@ name_export(const JSONRPCRequest& request)
 {
     NameOptionsHelp optHelp;
     optHelp
-        .withNameEncoding();
+        .withArg("count", RPCArg::Type::NUM, "-1",
+            "Number of names to export (-1 means all names)");
 
     RPCHelpMan("name_export",
-        "\nExport names to files (10000 names per file).\n",
-        {},
-        RPCResult{RPCResult::Type::ARR, "", "",
-            {NameInfoHelp()
-                    .withExpiration()
-                    .finish()}},
+        "\nExport names from a given namespace to the given file.\n",
+        {
+            {"regexp", RPCArg::Type::STR, RPCArg::Optional::NO, "Namespace to be exported"},
+            {"path", RPCArg::Type::STR, RPCArg::Optional::NO, "Path to the export file"},
+            optHelp.buildRpcArg(),
+        },
+        RPCResult{RPCResult::Type::STR, "", "number of exported names"},
         RPCExamples{
-            HelpExampleCli("name_export", "")})
+            HelpExampleCli("name_export", "\"^d\\/.+\" /path/to/export/file") + HelpExampleRpc("name_export", "\"^d\\/.+\" /path/to/export/file")})
         .Check(request);
 
     if (::ChainstateActive().IsInitialBlockDownload())
         throw JSONRPCError(RPC_CLIENT_IN_INITIAL_DOWNLOAD,
             "Namecoin is downloading blocks...");
 
-    RPCTypeCheck(request.params, {UniValue::VSTR});
+    RPCTypeCheck(request.params,
+        {UniValue::VSTR, UniValue::VSTR, UniValue::VOBJ});
 
-    boost::xpressive::sregex regexp = boost::xpressive::sregex::compile("^d\\/.+");
-    UniValue res(UniValue::VARR);
+    if (::ChainstateActive().IsInitialBlockDownload())
+        throw JSONRPCError(RPC_CLIENT_IN_INITIAL_DOWNLOAD,
+            "Namecoin is downloading blocks...");
+
     UniValue options(UniValue::VOBJ);
-    if (request.params.size() >= 2)
-        options = request.params[1].get_obj();
+    if (request.params.size() >= 3)
+        options = request.params[2].get_obj();
 
+
+    boost::xpressive::sregex regexp;
+    std::string regexpStr;
+    if (request.params.size() >= 1) {
+        regexpStr = request.params[0].get_str();
+        regexp = boost::xpressive::sregex::compile(regexpStr);
+    }
+
+    std::string path;
+    if (request.params.size() >= 2)
+        path = request.params[1].get_str();
+
+    int maxCount = -1;
+    if (options.exists("count"))
+        maxCount = options["count"].get_int();
 
     MaybeWalletForRequest wallet(request);
     LOCK2(cs_main, wallet.getLock());
@@ -629,8 +647,8 @@ name_export(const JSONRPCRequest& request)
     int count = 0;
     CNameData data;
     std::ofstream outfile;
-    outfile.open("result.json");
-    outfile << "[";
+    outfile.open(path);
+    outfile << "[" << std::endl;
     const auto& coinsTip = ::ChainstateActive().CoinsTip();
     std::unique_ptr<CNameIterator> iter(coinsTip.IterateNames());
     while (iter->next(name, data)) {
@@ -639,26 +657,29 @@ name_export(const JSONRPCRequest& request)
             boost::xpressive::smatch matches;
             if (!boost::xpressive::regex_search(nameStr, matches, regexp))
                 continue;
-            UniValue nameInfo = getNameInfo(options, name, data, wallet);
+            UniValue resultString(UniValue::VType::VSTR);
+            resultString.setStr(nameStr);
             if (count == 0) {
-                outfile << nameInfo.write(4) << std::endl;
+                outfile << resultString.write();
             } else {
-                outfile << ',' << nameInfo.write(4) << std::endl;
+                outfile  << ',' << std::endl << resultString.write();
             }
             count++;
+            if (maxCount != -1 && count >= maxCount)
+                break;
 
         } catch (const InvalidNameString& exc) {
             continue;
         }
     }
-    outfile << "]";
+    outfile << std::endl << "]";
     outfile.close();
-    UniValue result(UniValue::VSTR);
+
+    UniValue res(UniValue::VSTR);
     std::stringstream ss;
-    ss << "Found " << count << " names with \"^d\\/.+\" regexp";
-    result.setStr(ss.str());
-    res.push_back(result);
-    LogPrintf("Found %d names. Options: %s \n", count, options.write());
+    ss << "Found " << count << " names with \"" << regexpStr << "\" regexp";
+    res.setStr(ss.str());
+    LogPrintf("Found %d names with %s regexp. Options: %s \n", count, regexpStr, options.write());
     return res;
 } // namespace
 
