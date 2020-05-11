@@ -156,6 +156,7 @@ static const CRPCConvertParam vRPCConvertParams[] =
     { "disconnectnode", 1, "nodeid" },
     { "name_show", 1, "options" },
     { "name_history", 1, "options" },
+    { "name_export", 2, "options"},
     { "name_scan", 1, "count" },
     { "name_scan", 2, "options" },
     { "name_pending", 1, "options" },

@@ -14,6 +14,7 @@
 #include <rpc/server.h>
 #include <script/names.h>
 #include <txmempool.h>
+#include <index/txindex.h>
 #include <util/strencodings.h>
 #include <validation.h>
 #ifdef ENABLE_WALLET
@@ -137,6 +138,33 @@ void addOwnershipInfo(const CScript& addr, const CWallet* pwallet, UniValue& dat
 
 namespace {
 
+
+void TxToJSON(const CTransaction& tx, const uint256 hashBlock, UniValue& entry)
+{
+    // Call into TxToUniv() in bitcoin-common to decode the transaction hex.
+    //
+    // Blockchain contextual information (confirmations and blocktime) is not
+    // available to code in bitcoin-common, so we query them here and push the
+    // data into the returned UniValue.
+    TxToUniv(tx, uint256(), entry, true, RPCSerializationFlags());
+
+    if (!hashBlock.IsNull()) {
+        LOCK(cs_main);
+
+        entry.pushKV("blockhash", hashBlock.GetHex());
+        CBlockIndex* pindex = LookupBlockIndex(hashBlock);
+        if (pindex) {
+            if (::ChainActive().Contains(pindex)) {
+                entry.pushKV("confirmations", 1 + ::ChainActive().Height() - pindex->nHeight);
+                entry.pushKV("time", pindex->GetBlockTime());
+                entry.pushKV("blocktime", pindex->GetBlockTime());
+            }
+            else
+                entry.pushKV("confirmations", 0);
+        }
+    }
+}
+
 valtype
 DecodeNameValueFromRPCOrThrow(const UniValue& val, const UniValue& opt, const std::string& optKey, const NameEncoding defaultEnc)
 {
@@ -164,6 +192,25 @@ DecodeValueFromRPCOrThrow(const UniValue& val, const UniValue& opt)
 {
     return DecodeNameValueFromRPCOrThrow(val, opt, "valueEncoding",
         ConfiguredValueEncoding());
+}
+
+void pushTimestampOfDataTx(const CNameData entry, bool f_txindex_ready, UniValue& resRecord, const std::string keyName) {
+    CTransactionRef tx;
+    uint256 hash_block;
+    if (!GetTransaction(entry.getUpdateOutpoint().hash, tx, Params().GetConsensus(), hash_block, nullptr)) {
+        std::string errmsg;
+        if (!g_txindex) {
+            errmsg = "No such mempool transaction. Use -txindex or provide a block hash to enable blockchain transaction queries";
+        } else if (!f_txindex_ready) {
+            errmsg = "No such mempool transaction. Blockchain transactions are still in the process of being indexed";
+        } else {
+            errmsg = "No such mempool or blockchain transaction";
+        }
+        throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, errmsg + ". Use gettransaction for wallet transactions.");
+    }
+    UniValue resTx(UniValue::VOBJ);
+    TxToJSON(*tx, hash_block, resTx);
+    resRecord.pushKV(keyName, resTx["time"].get_int());
 }
 
 namespace {
@@ -594,6 +641,8 @@ name_export(const JSONRPCRequest& request)
 {
     NameOptionsHelp optHelp;
     optHelp
+        .withArg("withHistory", RPCArg::Type::BOOL, "false",
+            "Should export with name history?")
         .withArg("count", RPCArg::Type::NUM, "-1",
             "Number of names to export (-1 means all names)");
 
@@ -636,6 +685,13 @@ name_export(const JSONRPCRequest& request)
     if (request.params.size() >= 2)
         path = request.params[1].get_str();
 
+    bool withHistory = false;
+    if (options.exists("withHistory"))
+        withHistory = options["withHistory"].get_bool();
+    
+     if (withHistory && !fNameHistory)
+        throw std::runtime_error("-namehistory is not enabled");
+
     int maxCount = -1;
     if (options.exists("count"))
         maxCount = options["count"].get_int();
@@ -657,14 +713,42 @@ name_export(const JSONRPCRequest& request)
             boost::xpressive::smatch matches;
             if (!boost::xpressive::regex_search(nameStr, matches, regexp))
                 continue;
-            UniValue resultString(UniValue::VType::VSTR);
-            resultString.setStr(nameStr);
-            if (count == 0) {
-                outfile << resultString.write();
+            if (withHistory) {
+                bool f_txindex_ready = false;
+                if (g_txindex) {
+                    f_txindex_ready = g_txindex->BlockUntilSyncedToCurrentChain();
+                }
+
+                UniValue resObj = getNameInfo(options, name, data, wallet);
+                pushTimestampOfDataTx(data, f_txindex_ready, resObj, "last_updated");
+                UniValue resHistory(UniValue::VARR);
+                
+                CNameHistory history;
+                if (!coinsTip.GetNameHistory(name, history))
+                     assert(history.empty());
+                for (const auto& entry : history.getData()) {
+                    UniValue resRecord = getNameInfo(options, name, entry, wallet);
+                    pushTimestampOfDataTx(entry, f_txindex_ready, resRecord, "time");
+                    resHistory.push_back(resRecord);
+                }
+                resObj.pushKV("history", resHistory);
+                if (count == 0) {
+                    outfile << resObj.write();
+                } else {
+                    outfile  << ',' << resObj.write();
+                }
+                
             } else {
-                outfile  << ',' << std::endl << resultString.write();
+                UniValue resultString(UniValue::VType::VSTR);
+                resultString.setStr(nameStr);
+                if (count == 0) {
+                    outfile << resultString.write();
+                } else {
+                    outfile  << ',' << std::endl << resultString.write();
+                }
             }
             count++;
+            LogPrintf("Handling %d: '%s' \n", count, nameStr);
             if (maxCount != -1 && count >= maxCount)
                 break;
 
@@ -682,6 +766,7 @@ name_export(const JSONRPCRequest& request)
     LogPrintf("Found %d names with %s regexp. Options: %s \n", count, regexpStr, options.write());
     return res;
 } // namespace
+
 
 
 /* ************************************************************************** */
@@ -919,7 +1004,7 @@ static const CRPCCommand commands[] =
         {"names", "name_pending", &name_pending, {"name", "options"}},
         {"names", "name_checkdb", &name_checkdb, {}},
         {"rawtransactions", "namerawtransaction", &namerawtransaction, {"hexstring", "vout", "nameop"}},
-        {"names", "name_export", &name_export, {}},
+        {"names", "name_export", &name_export, {"regexp", "path", "options"}},
 
 };
 

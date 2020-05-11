@@ -48,6 +48,8 @@ valtype DecodeNameFromRPCOrThrow (const UniValue& val, const UniValue& opt);
  */
 valtype DecodeValueFromRPCOrThrow (const UniValue& val, const UniValue& opt);
 
+void pushTimestampOfDataTx(CNameData, bool, UniValue&, std::__cxx11::string);
+
 /**
  * Builder class for the RPC results for methods that return information about
  * names (like name_show, name_scan, name_pending or name_list).  Since the
